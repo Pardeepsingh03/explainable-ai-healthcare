@@ -2,75 +2,57 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-# DoWhy imports
-import dowhy
 from dowhy import CausalModel
-
-# EconML imports
 from econml.dml import LinearDML
+from causalml.inference.meta import BaseTRegressor
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
 
-# --- Step 1: Generate synthetic data ---
-
+# Step 1: Generate synthetic data
 np.random.seed(42)
 n = 1000
-
-# Confounders
 age = np.random.normal(40, 10, n)
 income = np.random.normal(50000, 15000, n)
-
-# Treatment assignment influenced by confounders
 treatment = (age + np.random.normal(0, 1, n) > 40).astype(int)
-
-# Outcome influenced by treatment and confounders + noise
 outcome = 5 * treatment + 0.1 * age + 0.0001 * income + np.random.normal(0, 1, n)
 
-# Put into DataFrame
 data = pd.DataFrame({'age': age, 'income': income, 'treatment': treatment, 'outcome': outcome})
 
-print("First 5 rows of the data:\n", data.head())
-
-# --- Step 2: Causal inference with DoWhy ---
-
-print("\n--- DoWhy Causal Inference ---")
-
+# Step 2: DoWhy
+print("\n--- DoWhy ---")
 model = CausalModel(
     data=data,
     treatment='treatment',
     outcome='outcome',
     common_causes=['age', 'income']
 )
-
-# Visualize the causal graph (optional)
-# This requires graphviz installed; uncomment if you want to see the graph
-# model.view_model()
-
 identified_estimand = model.identify_effect()
-print("Identified estimand:", identified_estimand)
+dowhy_estimate = model.estimate_effect(identified_estimand, method_name="backdoor.linear_regression")
+print("DoWhy ATE:", dowhy_estimate.value)
 
-estimate = model.estimate_effect(identified_estimand,
-                                 method_name="backdoor.linear_regression")
-print("DoWhy estimate of average treatment effect (ATE):", estimate.value)
+# Step 3: EconML
+print("\n--- EconML ---")
+econml_model = LinearDML(model_y='linear', model_t='linear', discrete_treatment=True, random_state=42)
+econml_model.fit(Y=data['outcome'], T=data['treatment'], X=data[['age', 'income']])
+econml_te_pred = econml_model.effect(X=data[['age', 'income']])
+print("EconML ATE:", np.mean(econml_te_pred))
 
-# Refute estimate with placebo treatment test (optional)
-refute = model.refute_estimate(identified_estimand, estimate,
-                               method_name="placebo_treatment_refuter", placebo_type="permute")
-print(refute)
-
-# --- Step 3: Causal inference with EconML ---
-
-print("\n--- EconML Causal Inference ---")
-
-est = LinearDML(model_y='linear', model_t='linear', discrete_treatment=True, random_state=42)
-est.fit(Y=data['outcome'], T=data['treatment'], X=data[['age', 'income']])
-
-# Estimate treatment effect for each sample
-te_pred = est.effect(X=data[['age', 'income']])
-
-print("EconML average treatment effect (ATE):", np.mean(te_pred))
-
-# Optional: plot treatment effects by age
-plt.scatter(data['age'], te_pred, alpha=0.5)
-plt.xlabel('Age')
-plt.ylabel('Estimated Treatment Effect')
-plt.title('EconML Estimated Treatment Effect by Age')
+# Plot EconML effect by age
+plt.scatter(data['age'], econml_te_pred, alpha=0.5)
+plt.xlabel("Age")
+plt.ylabel("Estimated Treatment Effect")
+plt.title("EconML: Treatment Effect by Age")
 plt.show()
+
+# Step 4: CausalML
+print("\n--- CausalML ---")
+X = data[['age', 'income']]
+y = data['outcome']
+t = data['treatment']
+
+X_train, X_test, t_train, t_test, y_train, y_test = train_test_split(X, t, y, test_size=0.3, random_state=42)
+
+causalml_model = BaseTRegressor(learner=RandomForestRegressor(n_estimators=100, random_state=42))
+causalml_model.fit(X=X_train, treatment=t_train, y=y_train)
+causalml_te_pred = causalml_model.predict(X=X_test)
+print("CausalML ATE:", np.mean(causalml_te_pred))
